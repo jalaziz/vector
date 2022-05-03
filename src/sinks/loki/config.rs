@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
+use codecs::encoding::SerializerConfig;
+use codecs::{JsonSerializerConfig, LogfmtSerializerConfig, RawMessageSerializerConfig};
 use futures::future::FutureExt;
 use serde::{Deserialize, Serialize};
 
 use super::{healthcheck::healthcheck, sink::LokiSink};
+use crate::sinks::util::encoding::{EncodingConfigAdapter, EncodingConfigMigrator};
 use crate::sinks::util::Compression;
 use crate::{
     config::{AcknowledgementsConfig, GenerateConfig, Input, SinkConfig, SinkContext},
@@ -18,15 +21,28 @@ use crate::{
     tls::{TlsConfig, TlsSettings},
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncodingMigrator;
+
+impl EncodingConfigMigrator for EncodingMigrator {
+    type Codec = Encoding;
+
+    fn migrate(codec: &Self::Codec) -> SerializerConfig {
+        match codec {
+            Encoding::Json => JsonSerializerConfig::new().into(),
+            Encoding::Text => RawMessageSerializerConfig::new().into(),
+            Encoding::Logfmt => LogfmtSerializerConfig::new().into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct LokiConfig {
     pub endpoint: UriSerde,
-    pub encoding: EncodingConfig<Encoding>,
-
+    #[serde(flatten)]
+    pub encoding: EncodingConfigAdapter<EncodingConfig<Encoding>, EncodingMigrator>,
     pub tenant_id: Option<Template>,
     pub labels: HashMap<Template, Template>,
-
     #[serde(default = "crate::serde::default_false")]
     pub remove_label_fields: bool,
     #[serde(default = "crate::serde::default_true")]
@@ -35,17 +51,12 @@ pub struct LokiConfig {
     pub compression: Compression,
     #[serde(default)]
     pub out_of_order_action: OutOfOrderAction,
-
     pub auth: Option<Auth>,
-
     #[serde(default)]
     pub request: TowerRequestConfig,
-
     #[serde(default)]
     pub batch: BatchConfig<LokiDefaultBatchSettings>,
-
     pub tls: Option<TlsConfig>,
-
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
