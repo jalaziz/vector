@@ -1,12 +1,13 @@
-use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use vector_core::transform::{InnerTopology, InnerTopologyTransform};
 
 use crate::{
-    conditions::AnyCondition,
-    config::{ComponentKey, DataType, Output, TransformConfig},
-    transforms::route::{RouteConfig, UNMATCHED_ROUTE},
+    conditions::{AnyCondition, Condition},
+    config::{ComponentKey, DataType, Input, Output, TransformConfig, TransformContext},
+    event::Event,
+    schema,
+    transforms::{SyncTransform, Transform, TransformOutputsBuf},
 };
 
 //------------------------------------------------------------------------------
@@ -41,6 +42,44 @@ impl Clone for PipelineConfig {
     }
 }
 
+#[async_trait::async_trait]
+#[typetag::serde(name = "pipeline")]
+impl TransformConfig for PipelineConfig {
+    async fn build(&self, ctx: &TransformContext) -> crate::Result<Transform> {
+        let condition = if let Some(config) = &self.filter {
+            Some(config.build(&ctx.enrichment_tables)?)
+        } else {
+            None
+        };
+
+        let mut transforms = Vec::new();
+        for config in &self.transforms {
+            let transform = match config.build(ctx).await? {
+                Transform::Function(transform) => Box::new(transform),
+                Transform::Synchronous(transform) => transform,
+                _ => panic!("non-sync transform in pipeline: {:?}", config),
+            };
+            transforms.push(transform);
+        }
+        Ok(Transform::Synchronous(Box::new(Pipeline {
+            condition,
+            transforms,
+        })))
+    }
+
+    fn input(&self) -> Input {
+        Input::all()
+    }
+
+    fn outputs(&self, _: &schema::Definition) -> Vec<Output> {
+        vec![Output::default(DataType::all())]
+    }
+
+    fn transform_type(&self) -> &'static str {
+        "pipeline"
+    }
+}
+
 impl PipelineConfig {
     pub(super) fn expand(
         &mut self,
@@ -48,55 +87,45 @@ impl PipelineConfig {
         inputs: &[String],
     ) -> crate::Result<Option<InnerTopology>> {
         let mut result = InnerTopology::default();
-        // define the name of the last output
-        let last_name = if self.transforms.is_empty() {
-            self.filter
-                .as_ref()
-                .map(|_filter| {
-                    let filter_name = name.join("filter");
-                    filter_name.join("success")
-                })
-                .ok_or_else(|| "mut have at least one transform or a filter".to_string())?
-        } else {
-            name.join(self.transforms.len() - 1)
-        };
+
+        result.inner.insert(
+            name.clone(),
+            InnerTopologyTransform {
+                inputs: inputs.to_vec(),
+                inner: Box::new(self.clone()),
+            },
+        );
+        // TODO: actually call outputs fn
         result
             .outputs
-            .push((last_name, vec![Output::default(DataType::all())]));
-        // insert the filter if needed and return the next inputs
-        let mut next_inputs = if let Some(ref filter) = self.filter {
-            let mut conditions = IndexMap::new();
-            conditions.insert("success".to_string(), filter.to_owned());
-            let filter_name = name.join("filter");
-            result.inner.insert(
-                filter_name.clone(),
-                InnerTopologyTransform {
-                    inputs: inputs.to_vec(),
-                    inner: Box::new(RouteConfig::new(conditions)),
-                },
-            );
-            result.outputs.push((
-                filter_name.clone(),
-                vec![Output::from((UNMATCHED_ROUTE, DataType::all()))],
-            ));
-            vec![filter_name.port("success")]
-        } else {
-            inputs.to_vec()
-        };
-        // compound like
-        for (index, transform) in self.transforms.iter().enumerate() {
-            let step_name = name.join(index);
-            result.inner.insert(
-                step_name.clone(),
-                InnerTopologyTransform {
-                    inputs: next_inputs,
-                    inner: transform.to_owned(),
-                },
-            );
-            next_inputs = vec![step_name.id().to_string()];
-        }
-        //
+            .push((name.clone(), vec![Output::default(DataType::all())]));
+
         Ok(Some(result))
+    }
+}
+
+#[derive(Clone)]
+struct Pipeline {
+    condition: Option<Condition>,
+    transforms: Vec<Box<dyn SyncTransform>>,
+}
+
+impl SyncTransform for Pipeline {
+    fn transform(&mut self, event: Event, output: &mut TransformOutputsBuf) {
+        if let Some(condition) = &self.condition {
+            if condition.check(&event) == false {
+                output.push(event);
+                return;
+            }
+        }
+        let mut alt = TransformOutputsBuf::dummy();
+        output.push(event);
+        for transform in &mut self.transforms {
+            std::mem::swap(&mut alt, output);
+            for event in alt.primary_buffer.as_mut().unwrap().drain() {
+                transform.transform(event, output);
+            }
+        }
     }
 }
 

@@ -286,11 +286,18 @@ impl TransformOutputs {
 
 #[derive(Debug, Clone)]
 pub struct TransformOutputsBuf {
-    primary_buffer: Option<OutputBuffer>,
+    pub primary_buffer: Option<OutputBuffer>,
     named_buffers: HashMap<String, OutputBuffer>,
 }
 
 impl TransformOutputsBuf {
+    pub fn dummy() -> Self {
+        Self {
+            primary_buffer: Some(OutputBuffer::with_capacity(8)),
+            named_buffers: Default::default(),
+        }
+    }
+
     pub fn new_with_capacity(outputs_in: Vec<Output>, capacity: usize) -> Self {
         let mut primary_buffer = None;
         let mut named_buffers = HashMap::new();
@@ -433,6 +440,10 @@ impl OutputBuffer {
         self.0.iter().map(EventArray::len).sum()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+
     pub fn first(&self) -> Option<EventRef> {
         self.0.first().and_then(|first| match first {
             EventArray::Logs(l) => l.first().map(Into::into),
@@ -441,7 +452,7 @@ impl OutputBuffer {
         })
     }
 
-    fn drain(&mut self) -> impl Iterator<Item = Event> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = Event> + '_ {
         self.0.drain(..).flat_map(EventArray::into_events)
     }
 
