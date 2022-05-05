@@ -78,6 +78,10 @@ impl TransformConfig for PipelineConfig {
     fn transform_type(&self) -> &'static str {
         "pipeline"
     }
+
+    fn enable_concurrency(&self) -> bool {
+        true
+    }
 }
 
 impl PipelineConfig {
