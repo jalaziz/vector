@@ -5,7 +5,7 @@ use vector_core::transform::{InnerTopology, InnerTopologyTransform};
 use crate::{
     conditions::{AnyCondition, Condition},
     config::{ComponentKey, DataType, Input, Output, TransformConfig, TransformContext},
-    event::Event,
+    event::{Event, EventArray, EventContainer},
     schema,
     transforms::{SyncTransform, Transform, TransformOutputsBuf},
 };
@@ -115,18 +115,39 @@ struct Pipeline {
 }
 
 impl SyncTransform for Pipeline {
-    fn transform(&mut self, event: Event, output: &mut TransformOutputsBuf) {
-        if let Some(condition) = &self.condition {
-            if condition.check(&event) == false {
-                output.push(event);
-                return;
-            }
+    fn transform(&mut self, _event: Event, _output: &mut TransformOutputsBuf) {
+        unimplemented!()
+    }
+
+    fn transform_all(&mut self, events: EventArray, output: &mut TransformOutputsBuf) {
+        if rand::random::<u16>() < 10 {
+            tracing::info!(batch_size = events.len());
         }
-        let mut alt = TransformOutputsBuf::dummy();
-        output.push(event);
+
+        let mut filtered = TransformOutputsBuf::dummy();
+
+        if let Some(condition) = &self.condition {
+            for event in events.into_events() {
+                if condition.check(&event) {
+                    filtered.push(event);
+                } else {
+                    output.push(event);
+                }
+            }
+        } else {
+            filtered
+                .primary_buffer
+                .as_mut()
+                .unwrap()
+                .extend(events.into_events());
+        }
+
+        let mut tmp_out = filtered;
+        let mut tmp_in = TransformOutputsBuf::dummy();
+
         for transform in &mut self.transforms {
-            std::mem::swap(&mut alt, output);
-            for event in alt.primary_buffer.as_mut().unwrap().drain() {
+            std::mem::swap(&mut tmp_out, &mut tmp_in);
+            for event in tmp_in.primary_buffer.as_mut().unwrap().drain() {
                 transform.transform(event, output);
             }
         }
