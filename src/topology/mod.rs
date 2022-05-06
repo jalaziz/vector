@@ -9,7 +9,6 @@
 pub(super) use vector_core::fanout;
 
 pub mod builder;
-mod ready_arrays;
 mod running;
 mod schema;
 mod task;
