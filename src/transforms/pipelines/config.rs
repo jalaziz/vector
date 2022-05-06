@@ -148,9 +148,14 @@ impl SyncTransform for Pipeline {
         for transform in &mut self.transforms {
             std::mem::swap(&mut tmp_out, &mut tmp_in);
             for event in tmp_in.primary_buffer.as_mut().unwrap().drain() {
-                transform.transform(event, output);
+                transform.transform(event, &mut tmp_out);
             }
         }
+        output
+            .primary_buffer
+            .as_mut()
+            .unwrap()
+            .extend(tmp_out.primary_buffer.unwrap().into_events());
     }
 }
 
